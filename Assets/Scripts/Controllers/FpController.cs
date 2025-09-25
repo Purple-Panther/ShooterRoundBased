@@ -516,7 +516,7 @@ namespace Controllers
             return forwardComp >= slideForwardThreshold && lateralComp <= (1f - slideForwardThreshold);
         }
 
-// Inicia o slide, aplicando velocidade para frente. Se forceMax for true, usa sprintSpeed
+        // Inicia o slide, aplicando velocidade para frente. Se forceMax for true, usa sprintSpeed
         private void BeginSlide(bool forceMax)
         {
             isSliding = true;
