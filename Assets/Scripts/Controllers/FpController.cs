@@ -1,4 +1,5 @@
 using Unity.Cinemachine;
+using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.Serialization;
 
@@ -8,19 +9,20 @@ namespace Controllers
     public class FpController : MonoBehaviour
     {
         [Header("Movement Parameters")]
-        [SerializeField] private float MaxSpeed => isCrouching ? (walkSpeed * 0.5f) : (sprintInput ? sprintSpeed : walkSpeed);
+        
         [SerializeField] private float acceleration = 15f;
-
+        [SerializeField] private float brake = 40f;
+        [SerializeField] private float turnResponsiveness = 25f;
+        [SerializeField] private float counterStrafe = 60f;
         [SerializeField] private float walkSpeed = 3.5f;
         [SerializeField] private float sprintSpeed = 8f;
-        [SerializeField] private float sprintCooldown = 4f;
-        [SerializeField] private float isCooldownSprint = 4f;
         
         [Space(15)]
         [Tooltip("Força do pulo.")]
         [SerializeField] private float jumpHeight = 2f;
         
-        public bool Sprinting => sprintInput && CurrentSpeed > 0.1f && !isCrouching && !isSliding;
+        private float MaxSpeed => isCrouching ? (walkSpeed * 0.5f) : (sprintInput ? sprintSpeed : walkSpeed);
+        private bool Sprinting => sprintInput && currentSpeed > 0.1f && !isCrouching && !isSliding;
 
         [Header("Slide Parameters")]
         [Tooltip("Duração do slide em segundos.")]
@@ -37,12 +39,9 @@ namespace Controllers
         [SerializeField] private float crouchHeight = 0.7f;
         
         [Header("Looking Parameters")] 
-        public Vector2 lookSensivity = new (.1f, .1f);
-
-        public float pitchLimit = 85f;
-        
+        [SerializeField] private Vector2 lookSensitivity = new (.1f, .1f);
+        [SerializeField] private float pitchLimit = 85f;
         [SerializeField] private float currentPitch;
-
         private float CurrentPitch
         {
             get => currentPitch;
@@ -52,14 +51,13 @@ namespace Controllers
         [Header("Camera Parameters")]
         [SerializeField] private float cameraNormalFov = 60f;
         private float CameraSprintFov => (float)(cameraNormalFov * .3) + cameraNormalFov;
-
-        private readonly float cameraFovSmoothing = 2f;
-
-        private Vector3 baseCameraLocalPos;
-        private float bobTime;
-        private bool wasGrounded;
-        private float landingOffset;
-
+        [SerializeField] 
+        private float cameraFovSmoothing = 2f;
+        [SerializeField] 
+        private float cameraHeigthSmoothing = 2f;
+        [SerializeField] 
+        private float cameraHeightScale;
+        
         [Header("Camera Bobbing / Shake")]
         [Tooltip("Ativa/desativa o head bobbing (balanço da câmera)")]
         [SerializeField] private bool enableHeadBob = true;
@@ -91,15 +89,28 @@ namespace Controllers
         [Header("Components")]
         [SerializeField] private CharacterController controller;
         [SerializeField] private CinemachineCamera fpCamera;
-
-        [FormerlySerializedAs("gravityScaçe")]
+        
         [Header("Physics Parameters")]
         [SerializeField] private float gravityScale = 3f;
         [SerializeField] private float verticalVelocity;
-        public Vector3 CurrentVelocity { get; private set; }
-        public float CurrentSpeed { get; private set; }
-        public bool IsGrounded => controller.isGrounded;
+        [SerializeField] public Vector3 currentVelocity;
+        [SerializeField] public float currentSpeed; 
+        
+        [Header("Advanced Gravity")]
+        [SerializeField] [Tooltip("> 1 acelera queda")]private float fallGravityMultiplier = 2.2f; 
+        [SerializeField] [Tooltip("> 1 dá menos \"flutuação\" na subida")]private float ascentGravityMultiplier = 1.2f; 
+        [SerializeField] [Tooltip("Clamp da velocidade de queda")]private float terminalFallSpeed = -55f; 
+        [SerializeField] [Tooltip("A partir disso, aterrisagem forte")]private float hardLandingSpeed = 14f; 
+        [SerializeField] [Tooltip("Shake máximo da câmera")]private float maxLandingShake = 0.18f; 
+        [SerializeField] [Tooltip("Reduz vel. horizontal no impacto")]private float landingHorizontalDampen = 0.15f; 
+        
+        [Header("Slide Input Rules")]
+        [SerializeField] [Tooltip("Quão \"para frente\" o input precisa estar (0..1)")] private float slideForwardThreshold = 0.6f; 
+        [SerializeField] [Tooltip("Janela de buffer do slide no ar (segundos)")] private float slideQueueTime = 0.25f;       
 
+
+        
+        private bool IsGrounded => controller.isGrounded;
         private bool isSliding;
         private bool isCrouching;
         private float slideTimer;
@@ -109,7 +120,17 @@ namespace Controllers
         private float originalRadius;
         private Vector3 originalScale;
         private float visualHeightScale = 1f;
-
+        private Vector3 baseCameraLocalPos;
+        private float bobTime;
+        private bool wasGrounded;
+        private float landingOffset;
+        private float fallStartY;
+        private bool wasFalling; 
+        private float peakFallSpeed;
+        private bool slideQueued;
+        private float slideQueuedUntil;
+        private bool sprintQueuedDuringSlide;
+        
         public FpController(float slideTimer)
         {
             this.slideTimer = slideTimer;
@@ -125,10 +146,13 @@ namespace Controllers
             originalScale = transform.localScale;
 
             if (fpCamera != null)
-            {
                 baseCameraLocalPos = fpCamera.transform.localPosition;
-            }
+
+            if (fpCamera == null)
+                fpCamera = GetComponentInChildren<CinemachineCamera>();
+            
             wasGrounded = IsGrounded;
+            cameraHeightScale = visualHeightScale;
         }
         
         private void OnValidate()
@@ -149,73 +173,80 @@ namespace Controllers
 
             if (Sprinting || isSliding)
             {
-                float speedRation = Mathf.Clamp01(CurrentSpeed / sprintSpeed);
+                float speedRation = Mathf.Clamp01(currentSpeed / sprintSpeed);
 
                 targetFov = Mathf.Lerp(cameraNormalFov, CameraSprintFov, speedRation);
             }
 
-            if (fpCamera != null)
+            if (fpCamera == null)
+                return;
+
+            cameraHeightScale =
+                Mathf.Lerp(cameraHeightScale, visualHeightScale, cameraHeigthSmoothing * Time.deltaTime);
+
+            if (enableHeadBob)
             {
-                if (enableHeadBob)
+                if (!wasGrounded && IsGrounded)
                 {
-                    if (!wasGrounded && IsGrounded)
-                    {
-                        landingOffset = -landingShakeAmount;
-                    }
+                    landingOffset = -landingShakeAmount;
+                }
 
-                    float amp = walkBobAmplitude;
-                    float freq = walkBobFrequency;
-                    if (isCrouching)
-                    {
-                        amp = crouchBobAmplitude;
-                        freq = crouchBobFrequency;
-                    }
-                    else if (Sprinting)
-                    {
-                        amp = sprintBobAmplitude;
-                        freq = sprintBobFrequency;
-                    }
+                float amp = walkBobAmplitude;
+                float freq = walkBobFrequency;
+                if (isCrouching)
+                {
+                    amp = crouchBobAmplitude;
+                    freq = crouchBobFrequency;
+                }
+                else if (Sprinting)
+                {
+                    amp = sprintBobAmplitude;
+                    freq = sprintBobFrequency;
+                }
 
-                    bool canBob = IsGrounded && !isSliding && CurrentSpeed > 0.05f;
+                bool canBob = IsGrounded && !isSliding && currentSpeed > 0.05f;
+
+                Vector3 scaledBase = baseCameraLocalPos;
+                scaledBase.y = baseCameraLocalPos.y * cameraHeightScale;
+                Vector3 targetLocal = scaledBase;
+                if (canBob)
+                {
+                    float speedFactor = Mathf.Clamp01(currentSpeed / sprintSpeed);
+                    float freqMul = Mathf.Lerp(0.8f, 1.4f, speedFactor);
+                    bobTime += Time.deltaTime * freq * freqMul;
+                    float bobY = Mathf.Abs(Mathf.Sin(bobTime)) * amp; // Baixo/cima
+                    float bobX = Mathf.Sin(bobTime * 0.5f) * (amp * 0.5f); // lateral
+                    targetLocal += new Vector3(bobX, bobY, 0f);
+                }
+
+                landingOffset = Mathf.MoveTowards(landingOffset, 0f, landingRecoverSpeed * Time.deltaTime);
+                targetLocal.y += landingOffset;
+
+                fpCamera.transform.localPosition = Vector3.Lerp(fpCamera.transform.localPosition, targetLocal,
+                    bobSmoothing * Time.deltaTime);
+            }
+            else
+            {
+                {
                     Vector3 scaledBase = baseCameraLocalPos;
-                    scaledBase.y = baseCameraLocalPos.y * visualHeightScale;
-                    Vector3 targetLocal = scaledBase;
-                    if (canBob)
-                    {
-                        float speedFactor = Mathf.Clamp01(CurrentSpeed / sprintSpeed);
-                        float freqMul = Mathf.Lerp(0.8f, 1.4f, speedFactor);
-                        bobTime += Time.deltaTime * freq * freqMul;
-                        float bobY = Mathf.Abs(Mathf.Sin(bobTime)) * amp;            // up/down
-                        float bobX = Mathf.Sin(bobTime * 0.5f) * (amp * 0.5f);       // side sway
-                        targetLocal += new Vector3(bobX, bobY, 0f);
-                    }
-
-                    landingOffset = Mathf.MoveTowards(landingOffset, 0f, landingRecoverSpeed * Time.deltaTime);
-                    targetLocal.y += landingOffset;
-
-                    fpCamera.transform.localPosition = Vector3.Lerp(fpCamera.transform.localPosition, targetLocal, bobSmoothing * Time.deltaTime);
+                    scaledBase.y = baseCameraLocalPos.y * cameraHeightScale;
+                    fpCamera.transform.localPosition = Vector3.Lerp(fpCamera.transform.localPosition, scaledBase,
+                        bobSmoothing * Time.deltaTime);
                 }
-                else
-                {
-                    {
-                        Vector3 scaledBase = baseCameraLocalPos;
-                        scaledBase.y = baseCameraLocalPos.y * visualHeightScale;
-                        fpCamera.transform.localPosition = Vector3.Lerp(fpCamera.transform.localPosition, scaledBase, bobSmoothing * Time.deltaTime);
-                    }
-                }
-
-                wasGrounded = IsGrounded;
             }
 
-            fpCamera.Lens.FieldOfView = Mathf.Lerp(fpCamera.Lens.FieldOfView, targetFov, cameraFovSmoothing * Time.deltaTime);
+            wasGrounded = IsGrounded;
+
+            fpCamera.Lens.FieldOfView =
+                Mathf.Lerp(fpCamera.Lens.FieldOfView, targetFov, cameraFovSmoothing * Time.deltaTime);
         }
 
         private void LookUpdate()
         {
-            Vector2 input = new Vector2(lookInput.x * lookSensivity.x, lookInput.y * lookSensivity.y);
-            
+            Vector2 input = new Vector2(lookInput.x * lookSensitivity.x, lookInput.y * lookSensitivity.y);
             CurrentPitch -= input.y;
-            fpCamera.transform.localRotation = Quaternion.Euler(CurrentPitch, 0f, 0f);
+            if(fpCamera != null)
+                fpCamera.transform.localRotation = Quaternion.Euler(CurrentPitch, 0f, 0f);
             
             transform.Rotate(Vector3.up * input.x);
         }
@@ -224,13 +255,16 @@ namespace Controllers
         {
             if (isSliding)
             {
-                // Durante o slide, ignoramos o input de movimento e aplicamos desaceleração horizontal
-                Vector3 horizontalVel = new Vector3(CurrentVelocity.x, 0f, CurrentVelocity.z);
+                if (sprintInput)
+                    sprintQueuedDuringSlide = true;
+                
+                Vector3 horizontalVel = new Vector3(currentVelocity.x, 0f, currentVelocity.z);
+                // Vector3 targetVel = new Vector3(currentVelocity.x * .3f, 0f, currentVelocity.z * .3f);
                 horizontalVel = Vector3.MoveTowards(horizontalVel, Vector3.zero, slideDeceleration * Time.deltaTime);
-                CurrentVelocity = new Vector3(horizontalVel.x, CurrentVelocity.y, horizontalVel.z);
+                currentVelocity = new Vector3(horizontalVel.x, currentVelocity.y, horizontalVel.z);
 
                 slideTimer -= Time.deltaTime;
-                if (slideTimer <= 0f || horizontalVel.magnitude < 0.2f)
+                if (slideTimer <= 0.2f || horizontalVel.magnitude < 0.2f)
                 {
                     EndSlide();
                 }
@@ -240,13 +274,37 @@ namespace Controllers
                 // Se estamos agachados, movimento normal (opcionalmente poderia reduzir velocidade)
                 Vector3 motion = transform.forward * moveInput.y + transform.right * moveInput.x;
                 motion.y = 0f;
-                motion.Normalize();
+                
+                float inputMagnitude = motion.magnitude;
+                Vector3 desiredDir = inputMagnitude > 0.001f ? motion.normalized : Vector3.zero;
+                
+                Vector3 horizVel = new Vector3(currentVelocity.x, 0f, currentVelocity.z);
+                bool hasInput = inputMagnitude > 0.1f;
 
-                if (motion.sqrMagnitude >= 0.1f)
-                    CurrentVelocity =
-                        Vector3.MoveTowards(CurrentVelocity, motion * MaxSpeed, acceleration * Time.deltaTime);
+                if (hasInput)
+                {
+                    //Reorienta rapidamente a velocidade para a direção desejada (diminui a patinada)
+                    if (horizVel.sqrMagnitude > 0.0001f && desiredDir != Vector3.zero)
+                    {
+                        Vector3 target = desiredDir * horizVel.magnitude; //Mantem módulo, muda direção
+                        horizVel = Vector3.RotateTowards(horizVel, target, turnResponsiveness * Mathf.Deg2Rad * Time.deltaTime, Mathf.Infinity);
+                    }
+                    
+                    //Se o input aponta Contra a velocidade atual, aplicar um freio mais forte primeiro
+                    float against = horizVel.sqrMagnitude > 0.0001f ? Vector3.Dot(horizVel.normalized, desiredDir) : 1f;
+                    float accelThisFrame = against < 0f ? counterStrafe : acceleration;
+                    
+                    //Acelera até a velocidade alvo
+                    Vector3 targetDir = desiredDir * MaxSpeed;
+                    horizVel = Vector3.MoveTowards(horizVel, targetDir, accelThisFrame * Time.deltaTime);
+                }
                 else
-                    CurrentVelocity = Vector3.MoveTowards(CurrentVelocity, Vector3.zero, acceleration * Time.deltaTime);
+                {
+                    // Sem Input = freio agressivo
+                    horizVel = Vector3.MoveTowards(horizVel, Vector3.zero, brake * Time.deltaTime);
+                }
+
+                currentVelocity = new Vector3(horizVel.x, currentVelocity.y, horizVel.z);
             }
 
             // Sair do agachamento quando soltar o botão
@@ -255,16 +313,80 @@ namespace Controllers
                 EndCrouch();
             }
 
-            if (IsGrounded && verticalVelocity <= 0.01f)
-                verticalVelocity = -3f;
+            if (IsGrounded)
+            {
+                if (wasFalling)
+                    HandleLandingImpact();
+
+                if (slideQueued)
+                {
+                    if (Time.time <= slideQueuedUntil)
+                    {
+                        BeginSlide(true);
+                    }
+
+                    slideQueued = false;
+                }
+                
+                wasFalling = false;
+                peakFallSpeed = 0f;
+                
+                if(verticalVelocity <= 0f)
+                    verticalVelocity = -3f; // mantém colado no chão
+            }
             else
-                verticalVelocity += Physics.gravity.y * gravityScale * Time.deltaTime;
+            {
+                // No ar: aplica gravidade diferenciada
+                float baseG = Physics.gravity.y * gravityScale;
+                bool rising = verticalVelocity > 0f;
+                float gMul = rising ? ascentGravityMultiplier : fallGravityMultiplier;
+
+                verticalVelocity += baseG * gMul * Time.deltaTime;
+                
+                // Clamp da velocidade terminal
+                if (verticalVelocity < terminalFallSpeed)
+                    verticalVelocity = terminalFallSpeed;
+                
+                //Marcar inicio da queda e acompanhar pico de velocidade de queda
+                if (!wasFalling)
+                {
+                    wasFalling = true;
+                    fallStartY = transform.position.y;
+                    peakFallSpeed = 0f;
+                }
+                if(verticalVelocity < peakFallSpeed)
+                    peakFallSpeed = verticalVelocity;
+            }
             
-            var fullVelocity = new Vector3(CurrentVelocity.x, verticalVelocity, CurrentVelocity.z);
+            if (IsGrounded && verticalVelocity < 0f)
+                verticalVelocity = -3f;
+
+            Vector3 fullVelocity = new Vector3(currentVelocity.x, verticalVelocity, currentVelocity.z);
+
+            currentSpeed = new Vector2(fullVelocity.x, fullVelocity.z).magnitude;
 
             controller.Move(fullVelocity * Time.deltaTime);
+        }
 
-            CurrentSpeed = new Vector3(CurrentVelocity.x, 0f, CurrentVelocity.z).magnitude;
+        private void HandleLandingImpact()
+        {
+            // baseada na velocidade de impacto, converter para intensidade [0 || 1]
+            float impactSpeed = Mathf.Abs(peakFallSpeed);
+
+            // normaliza contra a threshold de grande impacto
+            float t = Mathf.InverseLerp(0f, hardLandingSpeed, impactSpeed);
+            
+            // Amplitude do shake proporcional até um teto
+            float extraShake = Mathf.Lerp(0f, maxLandingShake, t);
+            
+            // Empurra o offset de aterrissagem
+            landingOffset = -Mathf.Max(landingShakeAmount, extraShake);
+            
+            // Amortece um pouco a velocidade horizontal dependendo do impacto
+            Vector3 horiz = new Vector3(currentVelocity.x, 0f, currentVelocity.z);
+            horiz *= 1f - landingHorizontalDampen * t;
+
+            currentVelocity = new Vector3(horiz.x, currentVelocity.y, horiz.z);
         }
 
         public void TryJump()
@@ -277,48 +399,52 @@ namespace Controllers
 
         public void TrySlide()
         {
-            // Só pode deslizar se estiver correndo (sprint) e no chão e não estiver agachado
-            if (isSliding || isCrouching || crouchInput || !IsGrounded || !Sprinting)
+            if (isSliding || isCrouching || crouchInput)
                 return;
 
-            isSliding = true;
-            slideTimer = slideDuration;
-
-            // Aumenta um pouco a velocidade na direção para frente no início do slide
-            Vector3 forward = transform.forward;
-            forward.y = 0f;
-            forward.Normalize();
-            Vector3 boosted = forward * sprintSpeed * slideSpeedMultiplier;
-            CurrentVelocity = new Vector3(boosted.x, verticalVelocity, boosted.z);
-
-            // Reduz a altura do controller mantendo a base na mesma posição
-            // Mantemos os valores originais capturados no Awake para garantir restauração correta
-            SetControllerHeight(slideHeight);
+            if (!IsGrounded)
+            {
+                slideQueued = true;
+                slideQueuedUntil = Time.time + slideQueueTime;
+                return;
+            }
+            
+            if(!Sprinting) return;
+            if(!HasForwardSlideInput()) return;
+            
+            BeginSlide(false);
         }
 
         private void EndSlide()
         {
             if (!isSliding) return;
             isSliding = false;
-            
-            // Se ainda estiver segurando o botão de agachar, entra no estado de agachado
+
             if (crouchInput && IsGrounded)
             {
                 StartCrouch();
                 return;
             }
             
-            // Caso contrário, restaura o CharacterController
             if (CanStandUp())
             {
                 SetControllerHeight(originalHeight);
-                // Restore radius to original and re-apply center to keep bottom fixed
                 controller.center = new Vector3(originalCenter.x, bottomYOffset + controller.height * 0.5f, originalCenter.z);
             }
             else
             {
                 // Sem espaço para levantar: permanece/agacha
                 StartCrouch();
+            }
+            
+            if (sprintQueuedDuringSlide && IsGrounded && HasForwardSlideInput())
+            {
+                Vector3 fwd = transform.forward;
+                fwd.y = 0f;
+                fwd.Normalize();
+                Vector3 boosted = fwd * sprintSpeed;
+                currentVelocity = new Vector3(boosted.x, currentVelocity.y, boosted.z);
+                sprintQueuedDuringSlide = false;
             }
         }
 
@@ -374,6 +500,39 @@ namespace Controllers
                 // Sem espaço acima: permanece agachado
                 isCrouching = true;
             }
+        }
+        
+        // Considera apenas input para frente, rejeitando lateral/trás
+        private bool HasForwardSlideInput()
+        {
+            // moveInput.y é o eixo para frente; moveInput.x é lateral
+            // Exige componente para frente suficiente e limita o lateral
+            if (moveInput.magnitude < 0.001f) return false;
+
+            float forwardComp = moveInput.y;               // -1 (trás) a +1 (frente)
+            float lateralComp = Mathf.Abs(moveInput.x);    // 0 (sem strafe) a 1
+
+            // Regras: precisa empurrar o suficiente para frente e não estar strafando muito
+            return forwardComp >= slideForwardThreshold && lateralComp <= (1f - slideForwardThreshold);
+        }
+
+// Inicia o slide, aplicando velocidade para frente. Se forceMax for true, usa sprintSpeed
+        private void BeginSlide(bool forceMax)
+        {
+            isSliding = true;
+            slideTimer = slideDuration;
+
+            sprintQueuedDuringSlide = false;
+
+            // Direção para frente do jogador no plano
+            Vector3 fwd = transform.forward; fwd.y = 0f; fwd.Normalize();
+
+            float baseSpeed = forceMax ? sprintSpeed : MaxSpeed; // quando aterrissar do buffer, forçamos velocidade máxima
+            Vector3 boosted = fwd * (baseSpeed * slideSpeedMultiplier);
+
+            currentVelocity = new Vector3(boosted.x, verticalVelocity, boosted.z);
+
+            SetControllerHeight(slideHeight);
         }
     }
 }
