@@ -18,14 +18,14 @@ jobs:
           echo "Executando testes..."
 
       - name: Notificar Discord
+        if: always() 
         uses: sarisia/actions-status-discord@v1
-        if: always()
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
-          status: ${{ job.status }}
-          content: "Hey <@316911818725392384>"
-          title: "deploy"
-          description: "Build and deploy to GitHub Pages"
-          color: 0x0000ff
-          url: "https://github.com/sarisia/actions-status-discord"
-          username: GitHub Action
+          title: "📦 CI - ${{ github.repository }}"
+          description: |
+            **Status:** ${{ job.status }}
+            **Branch:** ${{ github.ref_name }}
+            **Autor:** ${{ github.actor }}
+            **Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **Execução:** [Ver no GitHub](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
