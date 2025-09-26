@@ -18,14 +18,23 @@ jobs:
           echo "Executando testes..."
 
       - name: Notificar Discord
-        if: always() 
+        if: always() # sempre notifica, mesmo se falhar
         uses: sarisia/actions-status-discord@v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
-          title: "📦 CI - ${{ github.repository }}"
+
+          # título do embed
+          title: >
+            ${{ job.status == 'success' && '✅ Build Sucesso!' || '❌ Build Falhou!' }}
+
+          # descrição detalhada
           description: |
-            **Status:** ${{ job.status }}
-            **Branch:** ${{ github.ref_name }}
-            **Autor:** ${{ github.actor }}
-            **Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
-            **Execução:** [Ver no GitHub](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            **Repositório:** 📦 ${{ github.repository }}
+            **Status:** ${{ job.status == 'success' && '🟢 Sucesso' || '🔴 Erro' }}
+            **Branch:** 🌱 ${{ github.ref_name }}
+            **Autor:** 👤 ${{ github.actor }}
+            **Commit:** 🔗 [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **Execução:** ▶️ [Ver no GitHub](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          # cor do embed (verde ou vermelho)
+          color: ${{ job.status == 'success' && '3066993' || '15158332' }}
