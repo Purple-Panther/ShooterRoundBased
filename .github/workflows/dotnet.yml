@@ -26,7 +26,7 @@ jobs:
           # cabeçalho do embed (autor + avatar)
           author_name: "${{ github.actor }}"
           author_icon_url: "https://github.com/${{ github.actor }}.png"
-          author_url: "https://github.com/${{ github.actor }}"
+          author_url: ""
 
           # título do embed
           title: >
@@ -34,16 +34,11 @@ jobs:
 
           # descrição detalhada
           description: |
-            **Repositório:** 📦 ${{ github.repository }}
-            
+            **Repositório:** 📦 [${{ github.repository }}]({{ github.server_url }}/${{ github.repository }})
             **Status:** ${{ job.status == 'success' && '🟢 Sucesso' || '🔴 Erro' }}
-            
             **Branch:** 🌱 ${{ github.ref_name }}
-            
-            **Autor:** 👤 ${{ github.actor }}
-            
+            **Autor:** 👤 [${{ github.actor }}](https://github.com/${{ github.actor }})
             **Commit:** 🔗 [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
-            
             **Execução:** ▶️ [Ver no GitHub](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
           # cor do embed (verde ou vermelho)
