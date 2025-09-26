@@ -23,6 +23,11 @@ jobs:
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
 
+          # cabeçalho do embed (autor + avatar)
+          author_name: "${{ github.actor }}"
+          author_icon_url: "https://github.com/${{ github.actor }}.png"
+          author_url: "https://github.com/${{ github.actor }}"
+
           # título do embed
           title: >
             ${{ job.status == 'success' && '✅ Build Sucesso!' || '❌ Build Falhou!' }}
@@ -30,10 +35,15 @@ jobs:
           # descrição detalhada
           description: |
             **Repositório:** 📦 ${{ github.repository }}
+            
             **Status:** ${{ job.status == 'success' && '🟢 Sucesso' || '🔴 Erro' }}
+            
             **Branch:** 🌱 ${{ github.ref_name }}
+            
             **Autor:** 👤 ${{ github.actor }}
+            
             **Commit:** 🔗 [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            
             **Execução:** ▶️ [Ver no GitHub](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
           # cor do embed (verde ou vermelho)
