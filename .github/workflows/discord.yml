@@ -34,7 +34,7 @@ jobs:
 
           # descrição detalhada
           description: |
-            **Repositório:** 📦 [${{ github.repository }}]({{ github.server_url }}/${{ github.repository }})
+            **Repositório:** 📦 [${{ github.repository }}](${{ github.server_url }}/${{ github.repository }})
             **Status:** ${{ job.status == 'success' && '🟢 Sucesso' || '🔴 Erro' }}
             **Branch:** 🌱 ${{ github.ref_name }}
             **Autor:** 👤 [${{ github.actor }}](https://github.com/${{ github.actor }})
